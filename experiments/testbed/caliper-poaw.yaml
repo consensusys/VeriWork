@@ -1,0 +1,19 @@
+# Hyperledger Caliper benchmark config used on the 100-node private testbed
+# (paper Sec. VI-C).  Workload: mixed task submissions + credit swaps.
+test:
+  name: veriwork-poaw
+  description: PoAW consensus-layer throughput vs network size
+  workers: { number: 8 }
+  rounds:
+    - label: submit-attestations
+      txNumber: 20000
+      rateControl: { type: fixed-load, opts: { transactionLoad: 400 } }
+      workload: { module: workload/submit_attestation.js, arguments: { samples: 480 } }
+    - label: credit-swaps
+      txNumber: 5000
+      rateControl: { type: fixed-rate, opts: { tps: 200 } }
+      workload: { module: workload/credit_swap.js }
+monitors:
+  resource:
+    - module: process
+      options: { interval: 5, processes: [{ command: geth, arguments: --datadir, multiOutput: avg }] }

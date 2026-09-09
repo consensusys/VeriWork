@@ -1,0 +1,25 @@
+{
+  "name": "FlexFactory Orchestrator",
+  "description": "Web4 agent that manages predictive maintenance, procurement and production rebalancing for a VeriWork factory digital twin. Twin state is ZK-attested on the VeriWork L2.",
+  "url": "http://localhost:7402/a2a",
+  "version": "2.0.0",
+  "provider": { "organization": "VeriWork", "url": "https://github.com/andrewdong14/veriwork" },
+  "capabilities": { "streaming": false, "pushNotifications": true, "stateTransitionHistory": true },
+  "defaultInputModes": ["application/json"],
+  "defaultOutputModes": ["application/json"],
+  "skills": [
+    { "id": "predictive-maintenance", "name": "Predictive maintenance",
+      "description": "Detects degrading machines from ZK-attested twin states and schedules escrowed service orders.",
+      "tags": ["industry-4.0", "digital-twin", "zk"] },
+    { "id": "procurement", "name": "Parts procurement",
+      "description": "Issues supplier orders paid over x402 when inventory drops below reorder points.",
+      "tags": ["x402", "supply-chain"] },
+    { "id": "credit-swap", "name": "Inter-factory credit exchange",
+      "description": "Quotes and executes bonding-curve credit swaps on the VeriWork credit market.",
+      "tags": ["defi", "bonding-curve"] }
+  ],
+  "extensions": [
+    { "uri": "https://github.com/google-agentic-commerce/a2a-x402/v0.1", "description": "x402 payments", "required": false }
+  ],
+  "erc8004": { "agentRegistry": "eip155:1:{identityRegistry}", "supportedTrust": ["reputation", "crypto-economic"] }
+}

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "veriwork"
+version = "2.0.0"
+description = "VeriWork: Layer 2 Proof-of-Adaptive-Work reference node, SDK and agent tooling"
+readme = "../README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Zhongli Dong"}, {name = "Young Choon Lee"}, {name = "Albert Y. Zomaya"}]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+chain = ["web3>=6.0", "eth-account>=0.10"]
+agents = ["mcp>=1.0", "httpx>=0.27"]
+dev = ["pytest>=7", "matplotlib>=3.7"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["veriwork*"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]

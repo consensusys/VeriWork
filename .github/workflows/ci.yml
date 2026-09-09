@@ -1,0 +1,22 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -e "node[dev]"
+      - run: python -m pytest tests -q
+      - run: python -m flexfactory.run_simulation --minutes 30 --machines 10 --accel 50 --out /tmp/ff.json
+      - run: python experiments/consensus_benchmark.py --out /tmp/cb.csv
+  solidity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npm ci || npm install
+      - run: npx hardhat test
+        env: { HARDHAT_TELEMETRY_CONSENT: "false" }

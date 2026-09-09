@@ -1,0 +1,20 @@
+# node / hardhat
+node_modules/
+artifacts/
+cache/
+typechain-types/
+deployments.*.json
+# circuits
+circuits/build/
+circuits/node_modules/
+contracts/generated/
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+node/build/
+# experiments
+experiments/results/*.png
+# env
+.env

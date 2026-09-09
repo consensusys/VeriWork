@@ -1,0 +1,7 @@
+{
+  "name": "veriwork-circuits",
+  "private": true,
+  "scripts": { "build": "./build.sh" },
+  "dependencies": { "circomlib": "^2.0.5" },
+  "devDependencies": { "snarkjs": "^0.7.4" }
+}
