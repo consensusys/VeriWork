@@ -42,7 +42,7 @@ subsequent updates of the same machine.
 
 ## Not included
 
-Recursive aggregation of Groth16 proofs into one batch proof (paper Sec. IV-E)
+Recursive aggregation of Groth16 proofs into one batch proof
 is **not** part of this repository: there is no aggregator circuit, and
 `VeriWorkRollup` accepts whatever aggregated proof its configured verifier
 accepts (the mock, by default).
