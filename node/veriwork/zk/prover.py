@@ -4,6 +4,16 @@
 `circuits/` (Groth16, BN254).  `MockProver` reproduces the same interface with
 hash-based stand-ins so the node, simulator and tests run without a trusted
 setup; it is *not* sound and must never be used in production.
+
+C_twin public signals, in circuit order (outputs first, then public inputs);
+the registry contracts and `LocalL2` rebuild exactly this vector:
+
+    [twinHash, inputHash, boundsHash,
+     prevStateRoot, healthScore, cycleCount, machineId, submitter]
+
+With the mock backend, twinHash / inputHash / boundsHash are SHA-256 stand-ins
+(`mock_twin_hash`, `mock_input_hash`, `mock_bounds_hash`); with snarkjs they are
+the Poseidon outputs of the circuit (read them from the proof's public signals).
 """
 from __future__ import annotations
 
@@ -35,17 +45,80 @@ class Proof:
         return a, b, c, [int(x) for x in self.public]
 
 
-def twin_state_hash(mean_vibration: float, peak_temp: float,
-                    cycle_count: int, error_flags: int) -> bytes:
-    """H_twin: hash of the aggregate twin state (fixed-point encoding)."""
-    payload = json.dumps({
-        "mv": round(mean_vibration, 4), "pt": round(peak_temp, 2),
-        "cc": int(cycle_count), "ef": int(error_flags)}, sort_keys=True).encode()
-    return hashlib.sha256(payload).digest()
+TWIN_SIGNALS = ("twinHash", "inputHash", "boundsHash", "prevStateRoot",
+                "healthScore", "cycleCount", "machineId", "submitter")
 
 
 def field_elem(b: bytes) -> int:
     return int.from_bytes(b, "big") % BN254_FIELD
+
+
+def _sha_field(tag: str, payload) -> int:
+    return field_elem(hashlib.sha256(
+        tag.encode() + json.dumps(payload, sort_keys=True, default=str).encode()).digest())
+
+
+def _per_sensor(samples) -> List[List[int]]:
+    """Accept per-sensor lists [[...], ...] or a flat list (treated as one sensor)."""
+    if samples and isinstance(samples[0], (list, tuple)):
+        return [[int(x) for x in row] for row in samples]
+    return [[int(x) for x in samples]]
+
+
+def mock_input_hash(samples) -> int:
+    """Stand-in for H_in (Poseidon fold of the readings) -- MockProver only."""
+    return _sha_field("H_in", _per_sensor(samples))
+
+
+def mock_bounds_hash(bounds) -> int:
+    """Stand-in for Poseidon(lo[], hi[]) -- MockProver only.
+    `bounds` is [(lo, hi), ...] per sensor (or a single (lo, hi))."""
+    b = [bounds] if not isinstance(bounds[0], (list, tuple)) else list(bounds)
+    return _sha_field("bounds", [[int(lo), int(hi)] for lo, hi in b])
+
+
+def window_aggregates(samples):
+    """Per-sensor (sums, peaks), exactly as C_twin computes them."""
+    rows = _per_sensor(samples)
+    return [sum(r) for r in rows], [max(r) if r else 0 for r in rows]
+
+
+def mock_twin_hash(samples, cycle_count: int, error_flags: int, health_score: int) -> int:
+    """Stand-in for H_twin = Poseidon(Poseidon(sums, peaks), cycles, flags, health)."""
+    sums, peaks = window_aggregates(samples)
+    return _sha_field("H_twin", [sums, peaks, int(cycle_count), int(error_flags), int(health_score)])
+
+
+def machine_field(machine_id: str) -> int:
+    """Field-element machine id (what the registry's machineId holds)."""
+    return field_elem(hashlib.sha256(b"machine:" + machine_id.encode()).digest())
+
+
+def submitter_field(who: str) -> int:
+    """uint160(address) for 0x-addresses, else a hashed stand-in for simulated nodes."""
+    if who.startswith("0x") and len(who) == 42:
+        return int(who, 16)
+    return field_elem(hashlib.sha256(b"addr:" + who.encode()).digest()) >> 96
+
+
+def telemetry_public_signals(twin_hash: int, input_hash: int, bounds_hash: int, prev_root: int,
+                             health_score: int, cycle_count: int, machine_id: int,
+                             submitter: int) -> List[int]:
+    """C_twin public-signal vector in circuit order (see TWIN_SIGNALS)."""
+    return [int(twin_hash), int(input_hash), int(bounds_hash), int(prev_root),
+            int(health_score), int(cycle_count), int(machine_id), int(submitter)]
+
+
+def telemetry_circuit_input(samples, bounds, error_flags: int, prev_root: int, health_score: int,
+                            cycle_count: int, machine_id: int, submitter: int) -> Dict:
+    """snarkjs input for C_twin (the three hashes are circuit outputs, not inputs)."""
+    rows = _per_sensor(samples)
+    b = [bounds] * len(rows) if not isinstance(bounds[0], (list, tuple)) else list(bounds)
+    s = lambda x: str(int(x))
+    return {"prevStateRoot": s(prev_root), "healthScore": s(health_score), "cycleCount": s(cycle_count),
+            "machineId": s(machine_id), "submitter": s(submitter),
+            "samples": [[s(x) for x in r] for r in rows],
+            "lo": [s(lo) for lo, _ in b], "hi": [s(hi) for _, hi in b], "errorFlags": s(error_flags)}
 
 
 class ProverBackend:
@@ -74,8 +147,11 @@ class MockProver(ProverBackend):
     @staticmethod
     def _constraints_ok(circuit: str, w: Dict) -> bool:
         if circuit == "telemetry_attest":
-            lo, hi = w["bounds"]
-            return all(lo <= s <= hi for s in w["samples"])
+            rows = _per_sensor(w["samples"])
+            b = w["bounds"]
+            b = [b] * len(rows) if not isinstance(b[0], (list, tuple)) else list(b)
+            in_range = all(lo <= x <= hi for row, (lo, hi) in zip(rows, b) for x in row)
+            return in_range and 0 <= int(w.get("health_score", 0)) <= 100
         if circuit == "qc_attest":
             return all(l <= m <= u for m, l, u in zip(w["m"], w["lower"], w["upper"]))
         return True
@@ -142,12 +218,14 @@ class SnarkJSProver(ProverBackend):
                        "pi_c": [str(x) for x in proof.pi_c] + ["1"],
                        "protocol": "groth16", "curve": "bn128"}, open(pf, "w"))
             json.dump([str(x) for x in public_inputs], open(pub, "w"))
-            out = self._run("groth16", "verify", vkey, pub, pf)
+            try:
+                out = self._run("groth16", "verify", vkey, pub, pf)
+            except subprocess.CalledProcessError:
+                return False          # snarkjs exits non-zero on an invalid proof
         return "OK!" in out
 
     def aggregate(self, proofs: List[Proof]) -> Proof:
-        # PLONK-based recursive aggregation is delegated to the aggregator
-        # circuit in circuits/aggregator/ (see docs/ARCHITECTURE.md). The
-        # reference node ships the interface; production deployments plug in
-        # a recursion-capable backend here.
-        raise NotImplementedError("recursive aggregation requires the aggregator circuit build")
+        # Recursive aggregation is not part of this release: there is no
+        # aggregator circuit (see README).  Production deployments plug a
+        # recursion-capable backend in here.
+        raise NotImplementedError("recursive proof aggregation is not included in this release")

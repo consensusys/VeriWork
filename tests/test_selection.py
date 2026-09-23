@@ -1,6 +1,6 @@
 from collections import Counter
 import pytest
-from veriwork.consensus import selection_probabilities, select_committee, bft_liveness_threshold
+from veriwork.consensus import selection_probabilities, select_committee, bft_liveness_threshold, bft_max_faulty
 
 
 def test_probabilities_multiplicative():
@@ -36,5 +36,9 @@ def test_stake_weighted_frequency():
 
 
 def test_bft_threshold():
-    assert bft_liveness_threshold(7) == 3
-    assert bft_liveness_threshold(4) == 2
+    # k = 7 tolerates f = 2 Byzantine sequencers and needs k - f = 5 honest ones
+    assert bft_max_faulty(7) == 2 and bft_liveness_threshold(7) == 5
+    assert bft_max_faulty(4) == 1 and bft_liveness_threshold(4) == 3
+    for k in range(1, 50):
+        f = bft_max_faulty(k)
+        assert k >= 3 * f + 1 and bft_liveness_threshold(k) >= 2 * f + 1

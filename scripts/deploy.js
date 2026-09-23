@@ -1,6 +1,10 @@
 // Deploys the VeriWork L1 anchor + L2 contracts to the selected network.
-// For a real deployment replace MockGroth16Verifier with the verifiers exported
-// by circuits/build.sh (contracts/generated/*Verifier.sol).
+//
+// Verifiers: by default this uses MockGroth16Verifier (NOT sound).  For a real
+// deployment run circuits/build.sh and set
+//   TWIN_VERIFIER=TelemetryAttestVerifier    (contract exported for C_twin)
+// The aggregated-batch verifier has no circuit in this release (see README),
+// so the rollup keeps the mock unless AGG_VERIFIER names a real contract.
 const hre = require("hardhat");
 
 async function main() {
@@ -10,24 +14,34 @@ async function main() {
 
   const supply = hre.ethers.parseEther("1000000000");           // 1e9 VWC
   const vwc = await hre.ethers.deployContract("VWCToken", [supply, deployer.address]);
-  const verifier = await hre.ethers.deployContract("MockGroth16Verifier", [false]);
+  const mock = await hre.ethers.deployContract("MockGroth16Verifier", [false]);
+  const twinVerifier = process.env.TWIN_VERIFIER
+    ? await hre.ethers.deployContract(process.env.TWIN_VERIFIER) : mock;
+  const aggVerifier = process.env.AGG_VERIFIER
+    ? await hre.ethers.deployContract(process.env.AGG_VERIFIER) : mock;
+  if (!process.env.TWIN_VERIFIER) console.warn("WARNING: C_twin proofs verified by MockGroth16Verifier");
+
   const staking = await hre.ethers.deployContract("PoAWStaking", [await vwc.getAddress(), governance]);
   const election = await hre.ethers.deployContract("SequencerElection", [await staking.getAddress(), governance]);
   const genesis = hre.ethers.keccak256(hre.ethers.toUtf8Bytes("genesis"));
   const rollup = await hre.ethers.deployContract("VeriWorkRollup",
-    [await verifier.getAddress(), await staking.getAddress(), await election.getAddress(), genesis]);
+    [await aggVerifier.getAddress(), await staking.getAddress(), await election.getAddress(), genesis, governance]);
   const ordering = await hre.ethers.deployContract("CommitRevealOrdering", [1]);
   const market = await hre.ethers.deployContract("CreditMarket", [await vwc.getAddress(), governance]);
-  const tasks = await hre.ethers.deployContract("TaskRegistry", [await verifier.getAddress(), await vwc.getAddress()]);
+  const tasks = await hre.ethers.deployContract("TaskRegistry", [await twinVerifier.getAddress(), await vwc.getAddress()]);
   const twins = await hre.ethers.deployContract("FlexFactoryTwinRegistry",
-    [await verifier.getAddress(), await vwc.getAddress(), governance]);
+    [await twinVerifier.getAddress(), await vwc.getAddress(), governance]);
 
   const govSigner = await hre.ethers.getSigner(governance);
   await (await staking.connect(govSigner).setRollup(await rollup.getAddress())).wait();
   await (await election.connect(govSigner).setRollup(await rollup.getAddress())).wait();
+  // epsilon_i is read from the contracts that verify proofs (objective slashing)
+  await (await rollup.connect(govSigner).addOutcomeSource(await twins.getAddress())).wait();
+  await (await rollup.connect(govSigner).addOutcomeSource(await tasks.getAddress())).wait();
 
   const out = {
-    VWCToken: await vwc.getAddress(), Groth16Verifier: await verifier.getAddress(),
+    VWCToken: await vwc.getAddress(),
+    TwinVerifier: await twinVerifier.getAddress(), AggregatedVerifier: await aggVerifier.getAddress(),
     PoAWStaking: await staking.getAddress(), SequencerElection: await election.getAddress(),
     VeriWorkRollup: await rollup.getAddress(), CommitRevealOrdering: await ordering.getAddress(),
     CreditMarket: await market.getAddress(), TaskRegistry: await tasks.getAddress(),

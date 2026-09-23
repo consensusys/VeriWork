@@ -6,7 +6,9 @@ import "./interfaces/IERC20Minimal.sol";
 /// @title Multi-layer staking with dynamic slashing (paper Sec. III-B, Eq. 1).
 /// @notice Three layers: own bond, delegation, and per-service restaking capped
 ///         to bound correlated loss.  Slashing is objective: epsilon_i is
-///         reported by the rollup contract from ZK verification outcomes.
+///         computed by the rollup from on-chain ZK verification counters.
+///         Delegations are share-based, so a slash reduces every delegator's
+///         position pro rata; restaked positions are re-capped after a slash.
 ///
 ///         sigma_i <- sigma_i * (1 - lambda * epsilon_i)
 contract PoAWStaking {
@@ -27,8 +29,11 @@ contract PoAWStaking {
         bool registered;
     }
     mapping(address => Node) public nodes;
-    mapping(address => mapping(address => uint256)) public delegations;   // node => delegator => amt
-    mapping(address => mapping(bytes32 => uint256)) public restaked;      // node => service => amt
+    mapping(address => mapping(address => uint256)) public delegatorShares;  // node => delegator => shares
+    mapping(address => uint256) public totalDelegatorShares;                // node => shares
+    mapping(address => mapping(bytes32 => uint256)) public restaked;       // node => service => amt
+    mapping(address => bytes32[]) internal restakedServices;               // node => services used
+    mapping(address => mapping(bytes32 => bool)) internal knownService;
     address[] public nodeList;
 
     event Bonded(address indexed node, uint256 amount);
@@ -69,11 +74,23 @@ contract PoAWStaking {
 
     // ---------------- delegation layer ----------------
     function delegate(address node, uint256 amount) external {
-        require(nodes[node].registered, "unknown node");
+        Node storage n = nodes[node];
+        require(n.registered, "unknown node");
+        require(amount > 0, "zero");
+        uint256 ts = totalDelegatorShares[node];
+        require(ts == 0 || n.delegated > 0, "delegation pool wiped");
         require(vwc.transferFrom(msg.sender, address(this), amount), "xfer");
-        delegations[node][msg.sender] += amount;
-        nodes[node].delegated += amount;
+        uint256 shares = ts == 0 ? amount : (amount * ts) / n.delegated;
+        delegatorShares[node][msg.sender] += shares;
+        totalDelegatorShares[node] = ts + shares;
+        n.delegated += amount;
         emit Delegated(node, msg.sender, amount);
+    }
+
+    /// @return current value of `delegator`'s position with `node` (after slashing)
+    function delegationOf(address node, address delegator) external view returns (uint256) {
+        uint256 ts = totalDelegatorShares[node];
+        return ts == 0 ? 0 : (delegatorShares[node][delegator] * nodes[node].delegated) / ts;
     }
 
     // ---------------- restaking layer ----------------
@@ -81,6 +98,10 @@ contract PoAWStaking {
         Node storage n = nodes[msg.sender];
         uint256 cap = (n.own * restakeCapBps) / 10_000;
         require(restaked[msg.sender][service] + amount <= cap, "restake cap");
+        if (!knownService[msg.sender][service]) {
+            knownService[msg.sender][service] = true;
+            restakedServices[msg.sender].push(service);
+        }
         restaked[msg.sender][service] += amount;
         emit Restaked(msg.sender, service, amount);
     }
@@ -121,6 +142,12 @@ contract PoAWStaking {
         // pro-rata across own bond and the delegation pool
         n.own -= (n.own * frac) / WAD;
         n.delegated -= (n.delegated * frac) / WAD;
+        // restaked positions may not exceed the per-service cap of the smaller bond
+        uint256 cap = (n.own * restakeCapBps) / 10_000;
+        bytes32[] storage svcs = restakedServices[node];
+        for (uint256 i = 0; i < svcs.length; i++) {
+            if (restaked[node][svcs[i]] > cap) restaked[node][svcs[i]] = cap;
+        }
         // slashed VWC is burned to the zero-address sink (fixed supply, so we
         // park it in this contract's dead balance rather than minting)
         emit Slashed(node, epsilonWad, slashed);

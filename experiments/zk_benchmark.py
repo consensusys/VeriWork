@@ -1,45 +1,71 @@
-"""Groth16 proof generation / verification benchmark (paper Sec. VI-B).
+"""Groth16 proving / verification benchmark for C_twin (paper Sec. VI-B).
 
-Requires the compiled circuits (circuits/build.sh) and snarkjs on PATH.
-Reports per-task proving time, proof size and on-chain verification gas
-estimate for C_twin and C_qc.  Falls back to reporting circuit metadata only
-when the build is missing.
+Builds a telemetry window with the FlexFactory simulator, proves it with the
+snarkjs CLI (CPU; WASM witness generation) and verifies it locally.
+
+  python experiments/zk_benchmark.py          # production C_twin, 8 x 60 (circuits/build.sh)
+  python experiments/zk_benchmark.py --test   # 2 x 4 test instance      (circuits/build_test.sh)
+
+Timings include snarkjs process start-up.  Proof size is reported as the
+Solidity calldata of (a, b, c).  On-chain gas of updateTwinState with the real
+verifier is measured by the Hardhat suite (test/TwinRegistry.groth16.test.js).
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import platform
 import statistics
-import subprocess
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "node"))
-from veriwork.zk import SnarkJSProver
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "node"))
+sys.path.insert(0, os.path.join(HERE, ".."))
+from veriwork.zk import SnarkJSProver, telemetry_circuit_input, machine_field, submitter_field  # noqa: E402
 
-BUILD = os.path.join(os.path.dirname(__file__), "..", "circuits", "build")
+CIRC = os.path.join(HERE, "..", "circuits")
+SNARKJS = os.path.join(CIRC, "node_modules", ".bin", "snarkjs")
 
 
-def bench(circuit: str, witness_input: dict, runs: int = 5):
-    p = SnarkJSProver(BUILD)
-    gen, ver = [], []
-    for _ in range(runs):
-        t = time.perf_counter(); proof = p.prove(circuit, {"circuit_input": witness_input}); gen.append(time.perf_counter() - t)
-        t = time.perf_counter(); ok = p.verify(proof, proof.public, circuit); ver.append(time.perf_counter() - t)
-        assert ok
-    return {"circuit": circuit, "runs": runs, "prove_s_mean": statistics.mean(gen), "prove_s_p95": sorted(gen)[int(.95 * (runs - 1))],
-            "verify_ms_mean": 1000 * statistics.mean(ver), "proof_bytes": 200, "l1_verify_gas_est": 241_000}
+def window(test: bool):
+    from flexfactory.simulator import FactorySimulator, SENSORS, BOUNDS
+    sim = FactorySimulator(n_machines=1, seed=3)
+    win = next(iter(sim.step().values()))
+    sensors, m = (SENSORS[:2], 4) if test else (SENSORS, 60)
+    return [win[s][:m].astype(int).tolist() for s in sensors], [BOUNDS[s] for s in sensors]
 
 
 def main():
-    if not os.path.exists(os.path.join(BUILD, "telemetry_attest_final.zkey")):
-        print("circuits not built — run circuits/build.sh first.  Expected on RTX 4060: "
-              "C_twin prove 6.4-9.1 s, verify ~15 ms; C_qc prove ~0.6 s.")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--test", action="store_true", help="use the 2x4 test instance")
+    ap.add_argument("--runs", type=int, default=5)
+    a = ap.parse_args()
+    circuit = "telemetry_attest_test" if a.test else "telemetry_attest"
+    build = os.path.join(CIRC, "build", "test") if a.test else os.path.join(CIRC, "build")
+    if not os.path.exists(os.path.join(build, f"{circuit}_final.zkey")):
+        print(f"{circuit} is not built -- run circuits/{'build_test.sh' if a.test else 'build.sh'} first.")
         return
-    samples = [1200] * 480
-    twin_in = {"samples": samples, "cycleCount": 10, "errorFlags": 0, "lo": 0, "hi": 6000,
-               "inputHash": 0, "twinHash": 0}   # hashes computed by scripts/witness.py in practice
-    print(json.dumps(bench("telemetry_attest", twin_in), indent=2))
+    samples, bounds = window(a.test)
+    inp = telemetry_circuit_input(samples, bounds, error_flags=0, prev_root=0, health_score=87,
+                                  cycle_count=1200, machine_id=machine_field("cnc-01"),
+                                  submitter=submitter_field("edge-00"))
+    prover = SnarkJSProver(build, snarkjs_bin=SNARKJS if os.path.exists(SNARKJS) else "snarkjs")
+    gen, ver = [], []
+    for _ in range(a.runs):
+        t = time.perf_counter(); proof = prover.prove(circuit, {"circuit_input": inp}); gen.append(time.perf_counter() - t)
+        t = time.perf_counter(); ok = prover.verify(proof, proof.public, circuit); ver.append(time.perf_counter() - t)
+        assert ok, "proof failed to verify"
+    pa, pb, pc, pub = proof.to_solidity_args()
+    print(json.dumps({
+        "circuit": circuit, "runs": a.runs, "prover": "snarkjs CLI (CPU)",
+        "host": {"machine": platform.machine(), "cpus": os.cpu_count()},
+        "prove_s_mean": round(statistics.mean(gen), 3), "prove_s_max": round(max(gen), 3),
+        "verify_ms_mean": round(1000 * statistics.mean(ver), 1),
+        "public_signals": len(pub),
+        "proof_calldata_bytes": 32 * (len(pa) + 2 * len(pb) + len(pc)),
+    }, indent=2))
 
 
 if __name__ == "__main__":

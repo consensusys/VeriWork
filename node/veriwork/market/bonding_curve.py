@@ -2,11 +2,12 @@
 
   W_a = B_a / T_m,   T_m = P_m * N_m
   P   = B_a / (O_m * W_a)
-  CE_a   = (1 + T_a/B_a)^W_a - 1,        S_a  = T_a * ... (buy)
-  CE_p   = (1 + DE_m/B_a)^(1/W_a) - 1,   Paid = B_a * CE_p (sell)
+  buy  (Eq. 6):  CE_a = (1 + T_a/B_a)^W_a - 1,       I_a  = O_m * CE_a   (credit issued)
+  sell (Eq. 7):  CE_p = 1 - (1 - R_a/O_m)^(1/W_a),   Paid = B_a * CE_p   (VWC returned)
 
 Names follow the paper: B_a reserve balance (in main credit, VWC), O_m
-outstanding supply of the application credit, W_a reserve weight.
+outstanding supply of the application credit (S_a in Eq. 6-7), W_a reserve
+weight, T_a VWC paid in, R_a application credit sold back.
 """
 from __future__ import annotations
 

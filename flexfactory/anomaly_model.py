@@ -49,7 +49,7 @@ class HealthModel:
         h = float(np.clip(z @ self.w + self.b, 0.0, 1.0))
         return int(round(100 * h))
 
-    def needs_maintenance(self, window: Dict[str, np.ndarray], threshold: int = 30) -> bool:
+    def needs_maintenance(self, window: Dict[str, np.ndarray], threshold: int = 40) -> bool:
         return self.health_score(window) < threshold
 
 

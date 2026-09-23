@@ -1,11 +1,16 @@
-"""FlexFactory orchestration agent (paper Listing 2, Algorithm 3).
+"""FlexFactory orchestration agent (paper Code Snippet 2, Algorithm 2).
 
 Each tick (one L2 block):
   1. read all twin states, inventory and recent L2 events
   2. ask the planner for {maintenance, procurement, rebalance}
   3. execute: escrow VWC for maintenance, issue x402-paid procurement orders,
-     redistribute workload — all subject to the safety rails of Sec. VII-E
-     (budget cap, whitelist, human-review threshold).
+     redistribute workload -- subject to the safety rails of Sec. VIII-D.
+
+On-chain, FlexFactoryTwinRegistry enforces the same rails regardless of what
+the agent does (whitelisted agents and service providers, a per-agent daily
+spending cap, and human review of orders above a threshold).  `AgentSafetyRails`
+mirrors them client-side so that the in-process LocalL2, which has no escrow
+contract, exercises the same behaviour.
 """
 from __future__ import annotations
 
@@ -20,8 +25,8 @@ from .erc8004 import AgentIdentity
 
 @dataclass
 class AgentSafetyRails:
-    max_escrow_per_order: float = 500.0      # above this => human review
-    daily_budget_vwc: float = 50_000.0
+    max_escrow_per_order: float = 500.0      # above this => human review (humanReviewThreshold)
+    daily_budget_vwc: float = 50_000.0       # dailyAgentCap
     whitelisted_providers: List[str] = field(default_factory=lambda: ["svc-provider-0x02"])
     whitelisted_suppliers: List[str] = field(default_factory=lambda: ["SUP-B"])
 
@@ -48,36 +53,92 @@ class FactoryAgent:
 
     # ---- one control step ----------------------------------------------------
     def tick(self) -> int:
-        twins = [dict(machine_id=t.machine_id, health_score=t.health_score,
-                      maintenance_flag=t.maintenance_flag, cycle_count=t.cycle_count,
-                      order_open=t.machine_id in self.open_orders)
-                 for t in self.l2.all_twin_states()]
-        events = self.l2.recent_events(self._last_block)
+        """Sense, plan, act: once per L2 block."""
+        orders = self.open_orders
+        twins = []
+        for t in self.l2.all_twin_states():
+            twins.append({
+                "machine_id": t.machine_id,
+                "health_score": t.health_score,
+                "maintenance_flag":
+                    t.maintenance_flag,
+                "cycle_count": t.cycle_count,
+                "order_open":
+                    t.machine_id in orders,
+            })
+        events = self.l2.recent_events(
+            self._last_block)
         self._last_block = self.l2.block
-        plan = self.planner.plan(twins, self.inventory, events)
+        # LLM or rule-based planner; malformed LLM
+        # output falls back to the rule-based plan
+        plan = self.planner.plan(
+            twins, self.inventory, events)
+
         acted = 0
         for m in plan.get("maintenance", []):
-            acted += int(self._schedule_maintenance(m["machineId"], m["serviceProvider"], float(m["escrowVWC"])))
+            acted += self._schedule_maintenance(
+                m["machineId"],
+                m["serviceProvider"],
+                float(m["escrowVWC"]))
         for p in plan.get("procurement", []):
-            self._issue_procurement(p["supplierId"], p["partSKU"], int(p["quantity"]), float(p["maxPrice"]))
+            self._issue_procurement(
+                p["supplierId"], p["partSKU"],
+                int(p["quantity"]),
+                float(p["maxPrice"]))
         for r in plan.get("rebalance", []):
-            self.log.append({"action": "rebalance", **r, "t": time.time()})
+            self.log.append({
+                "action": "rebalance", **r,
+                "t": time.time()})
         self._complete_finished_orders()
-        return acted
+        return int(acted)
 
     # ---- actions ---------------------------------------------------------------
-    def _schedule_maintenance(self, machine_id: str, provider: str, escrow: float) -> bool:
-        if provider not in self.rails.whitelisted_providers:
-            self.log.append({"action": "maintenance_rejected", "reason": "provider not whitelisted", "machine": machine_id}); return False
-        if escrow > self.rails.max_escrow_per_order:
-            self.pending_human_review.append({"machine": machine_id, "provider": provider, "escrow": escrow}); return False
-        if self.spent_today + escrow > self.rails.daily_budget_vwc or escrow > self.budget:
-            self.log.append({"action": "maintenance_rejected", "reason": "budget", "machine": machine_id}); return False
-        self.budget -= escrow; self.spent_today += escrow
-        self.open_orders[machine_id] = {"provider": provider, "escrow": escrow, "block": self.l2.block}
-        self.l2._emit("MaintenanceScheduled", machine_id=machine_id, provider=provider, escrow=escrow, agent=self.wallet)
-        self.log.append({"action": "schedule_maintenance", "machine": machine_id, "escrow": escrow})
+    def _schedule_maintenance(
+            self, machine_id: str, provider: str,
+            escrow: float) -> bool:
+        """Mirror of the on-chain rails of the
+        twin registry (scheduleMaintenance)."""
+        rails = self.rails
+        allowed = rails.whitelisted_providers
+        if provider not in allowed:
+            why = "provider not whitelisted"
+            return self._reject(machine_id, why)
+        if escrow > rails.max_escrow_per_order:
+            # held for human review (on-chain:
+            # PendingReview, then reviewOrder)
+            self.pending_human_review.append(
+                {"machine": machine_id,
+                 "provider": provider,
+                 "escrow": escrow})
+            return False
+        if (self.spent_today + escrow
+                > rails.daily_budget_vwc
+                or escrow > self.budget):
+            return self._reject(machine_id,
+                                "budget")
+        self.budget -= escrow
+        self.spent_today += escrow
+        self.open_orders[machine_id] = {
+            "provider": provider,
+            "escrow": escrow,
+            "block": self.l2.block}
+        self.l2._emit("MaintenanceScheduled",
+                      machine_id=machine_id,
+                      provider=provider,
+                      escrow=escrow,
+                      agent=self.wallet)
+        self.log.append({
+            "action": "schedule_maintenance",
+            "machine": machine_id,
+            "escrow": escrow})
         return True
+
+    def _reject(self, machine_id: str,
+                reason: str) -> bool:
+        self.log.append({"action": "maintenance_rejected",
+                         "reason": reason,
+                         "machine": machine_id})
+        return False
 
     def _issue_procurement(self, supplier: str, sku: str, qty: int, max_price: float) -> None:
         if supplier not in self.rails.whitelisted_suppliers:

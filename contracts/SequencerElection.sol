@@ -4,11 +4,16 @@ pragma solidity ^0.8.20;
 import "./PoAWStaking.sol";
 
 /// @title PoUW scoring and hybrid PoAW committee election (paper Eq. 2, Eq. 3).
-/// @notice Off-chain nodes compute the same election from public inputs; this
-///         contract is the canonical on-chain reference used to settle disputes.
+/// @notice Off-chain nodes mirror this election (node/veriwork/consensus); the
+///         on-chain result is canonical.
 ///
 ///   S_i  = alpha * T_valid/T_sub + beta * V_i/V_max + gamma * U_i/U_max      (WAD)
+///          (the validity ratio is 0 for a node with no submissions)
 ///   P(i) = sigma_i * S_i / sum_j sigma_j * S_j
+///
+///   Validity counts and volume come from on-chain proof verification
+///   outcomes (VeriWorkRollup settles them each epoch); uptime U_i is
+///   reported by the committee and only affects the gamma term.
 contract SequencerElection {
     uint256 public constant WAD = 1e18;
 
@@ -46,19 +51,26 @@ contract SequencerElection {
         require(size <= k && size > 0, "size"); kEligible = k; committeeSize = size;
     }
 
-    /// @notice Rollup reports per-epoch outcomes after verifying batch proofs.
-    function recordOutcome(address node, bool valid, uint128 volume, uint64 uptimeWad) external onlyRollup {
+    /// @notice Rollup records a node's verification outcomes for the epoch,
+    ///         read from on-chain outcome sources (not reported by any party).
+    function recordOutcomes(address node, uint64 valid, uint64 submitted, uint128 volume) external onlyRollup {
+        require(valid <= submitted, "valid > submitted");
         Stats storage s = stats[node];
-        s.submitted += 1;
-        if (valid) { s.valid += 1; s.volume += volume; }
-        s.uptimeWad = uptimeWad;
+        s.valid += valid;
+        s.submitted += submitted;
+        s.volume += volume;
+    }
+
+    /// @notice Committee-reported uptime in [0, 1e18]; affects only the gamma term.
+    function setUptime(address node, uint64 uptimeWad) external onlyRollup {
+        require(uptimeWad <= WAD, "uptime > 1");
+        stats[node].uptimeWad = uptimeWad;
     }
 
     /// @dev PoUW score S_i in WAD given epoch maxima.
     function score(address node, uint256 vMax, uint256 uMax) public view returns (uint256) {
         Stats storage s = stats[node];
-        if (s.submitted == 0) return 0;
-        uint256 ratio = (uint256(s.valid) * WAD) / s.submitted;
+        uint256 ratio = s.submitted == 0 ? 0 : (uint256(s.valid) * WAD) / s.submitted;
         uint256 vTerm = vMax == 0 ? 0 : (uint256(s.volume) * WAD) / vMax;
         uint256 uTerm = uMax == 0 ? 0 : (uint256(s.uptimeWad) * WAD) / uMax;
         return (alpha * ratio + beta * vTerm + gamma * uTerm) / WAD;
@@ -72,8 +84,9 @@ contract SequencerElection {
         return (staking.stakeOf(node) * score(node, vMax, uMax) / WAD) * rep / WAD;
     }
 
-    /// @notice Hybrid election: top-k by S_i, then stake-weighted sortition
-    ///         without replacement, seeded by the epoch beacon `seed`.
+    /// @notice Hybrid election: top-k by S_i, then sortition without
+    ///         replacement weighted by sigma_i * S_i (Eq. 2), seeded by `seed`
+    ///         (the rollup derives it from the RANDAO beacon).
     ///         Gas is O(n * k); intended for committees of tens of nodes.
     function advanceEpoch(bytes32 seed) external onlyRollup {
         uint256 n = staking.nodeCount();
@@ -101,7 +114,7 @@ contract SequencerElection {
             (cand[i], cand[best]) = (cand[best], cand[i]);
             (sc[i], sc[best]) = (sc[best], sc[i]);
         }
-        // stake-weighted sortition without replacement
+        // sigma_i * S_i-weighted sortition without replacement (Eq. 2)
         uint256 size = committeeSize < k ? committeeSize : k;
         address[] memory chosen = new address[](size);
         uint256[] memory w = new uint256[](k);

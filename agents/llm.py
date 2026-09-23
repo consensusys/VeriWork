@@ -1,4 +1,4 @@
-"""Model-agnostic planner interface (paper Listing 2: `AgentLLM`).
+"""Model-agnostic planner interface (paper Code Snippet 2: the planner).
 
 `RuleBasedPlanner` is a deterministic fallback with no API dependency so the
 simulator and CI run offline.  `LLMPlanner` calls any OpenAI-compatible or
@@ -27,7 +27,7 @@ class Planner:
 
 
 class RuleBasedPlanner(Planner):
-    def __init__(self, threshold: int = 30, provider: str = "svc-provider-0x02",
+    def __init__(self, threshold: int = 40, provider: str = "svc-provider-0x02",
                  escrow_vwc: float = 120.0, reorder_point: int = 20):
         self.threshold, self.provider, self.escrow, self.reorder_point = threshold, provider, escrow_vwc, reorder_point
 

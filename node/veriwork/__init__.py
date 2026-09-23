@@ -8,4 +8,4 @@ wrapper described in:
   for Web4 dApps with Zero-Knowledge Verification" (PDCAT 2026).
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

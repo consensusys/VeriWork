@@ -3,8 +3,10 @@
     P(n_i) = sigma_i * S_i / sum_j sigma_j * S_j
 
 VeriWork instantiates this as a hybrid: the top-k nodes by S_i form the
-eligibility set, and committee seats are drawn from that set by stake-weighted
-sortition, seeded by a verifiable epoch randomness beacon.
+eligibility set, and committee seats are drawn from that set by sortition
+weighted by sigma_i * S_i (Eq. 2), seeded by the epoch randomness beacon.
+The on-chain `SequencerElection` applies the same rules with its own PRNG
+(keccak over a RANDAO-derived seed); its result is canonical.
 """
 from __future__ import annotations
 
@@ -89,6 +91,13 @@ def select_committee(stake: Mapping[str, float],
     return committee
 
 
+def bft_max_faulty(committee_size: int) -> int:
+    """Byzantine sequencers a committee of k tolerates: f = floor((k-1)/3)."""
+    return (committee_size - 1) // 3
+
+
 def bft_liveness_threshold(committee_size: int) -> int:
-    """Honest sequencers required for liveness: floor((k-1)/3) + 1 (paper Sec. VII-B)."""
-    return (committee_size - 1) // 3 + 1
+    """Honest sequencers required for BFT safety and liveness: k - f with
+    f = floor((k-1)/3), i.e. at least 2f+1 (paper Sec. VII-B).  For k = 7 this
+    is 5 (tolerating 2 faulty); for k = 4 it is 3."""
+    return committee_size - bft_max_faulty(committee_size)

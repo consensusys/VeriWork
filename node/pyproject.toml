@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "veriwork"
-version = "2.0.0"
+version = "2.1.0"
 description = "VeriWork: Layer 2 Proof-of-Adaptive-Work reference node, SDK and agent tooling"
-readme = "../README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [{name = "Zhongli Dong"}, {name = "Young Choon Lee"}, {name = "Albert Y. Zomaya"}]
