@@ -122,16 +122,6 @@ payments over **x402**, and register identity/reputation under **ERC-8004**
   behind `HealthModel.health_score()`.
 - Cross-chain VWC bridging via LayerZero v2 is configured at deployment and not part of this repo.
 
-## Cite
-
-```bibtex
-@inproceedings{dong2026veriwork,
-  title     = {VeriWork: A Layer 2 Proof-of-Adaptive-Work Platform for Web4 dApps with Zero-Knowledge Verification},
-  author    = {Dong, Zhongli and Lee, Young Choon and Zomaya, Albert Y.},
-  booktitle = {Proc. 27th International Conference on Parallel and Distributed Computing, Applications and Technologies (PDCAT)},
-  year      = {2026}
-}
-```
 
 ## License
 
