@@ -158,7 +158,6 @@ settle machine-to-machine payments over **x402**, and register identity/reputati
 - `experiments/run_all.sh` simulates 12 hours with wear accelerated ×20.
 - Cross-chain VWC bridging via LayerZero v2 is configured at deployment and not part of this repo.
 
-See `CHANGES.md` for what changed in v2.1.0.
 
 ## License
 
